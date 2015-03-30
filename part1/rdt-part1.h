@@ -69,8 +69,6 @@ int rdt_bind(int fd, u16b_t port){
 /* Application process calls this function to specify the IP address
    and port number used by remote process and associates them to the 
    RDT socket.
-** connect() is used here to sets the receiver's address, though it is little
-   sense to use connect() as we have already use sendto().
    return	-> 0 on success, -1 on error
 */
 int rdt_target(int fd, char * peer_name, u16b_t peer_port){
@@ -78,16 +76,18 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
     if ((he = gethostbyname(peer_name)) == NULL) {
         return  -1;
     }
-    
     peer_addr.sin_family = AF_INET;
     peer_addr.sin_port = htons(peer_port);
     peer_addr.sin_addr = *((struct in_addr *)he->h_addr);
     memset(&(peer_addr.sin_zero), '\0', 8);
-    
-    /*if (bind(fd, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr)) == -1) {
-        return -1;
-    }*/
-	if(connect(fd, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr)) == -1){
+
+    // connect cannot be used, otherwise the socket will be occupied,
+    // which causes trouble to sendto() because [Socket is already connected].
+	/*if(connect(fd, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr)) == -1){
+		return -1;
+	}*/
+
+	if((struct sockaddr *)&peer_addr){
 		return -1;
 	}
 
@@ -102,9 +102,11 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
    return	-> size of data sent on success, -1 on error
 */
 int rdt_send(int fd, char * msg, int length){
+
     if (sendto(fd, msg, length, 0, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr_in)) == -1) {
         return -1;
     }
+
     return length;
 }
 
@@ -129,8 +131,10 @@ int rdt_recv(int fd, char * msg, int length){
 /* Application process calls this function to close the RDT socket.
 */
 int rdt_close(int fd){
-    close(fd);
-    return 0;////
+    if(close(fd) < 0){
+    	perror("close");
+    }
+    return 0;
 }
 
 #endif
