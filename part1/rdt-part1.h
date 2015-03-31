@@ -83,13 +83,13 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
 
     // connect cannot be used, otherwise the socket will be occupied,
     // which causes trouble to sendto() because [Socket is already connected].
-	/*if(connect(fd, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr)) == -1){
-		return -1;
-	}*/
-
-	if((struct sockaddr *)&peer_addr){
+	if(connect(fd, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr)) == -1){
 		return -1;
 	}
+
+	/*if((struct sockaddr *)&peer_addr){
+		return -1;
+	}*/
 
     return 0;
 }
@@ -103,7 +103,9 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
 */
 int rdt_send(int fd, char * msg, int length){
 
-    if (sendto(fd, msg, length, 0, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr_in)) == -1) {
+	// since connect() is used, we cannot use sendto(). socket has been occupied by connect().
+    if (send(fd, msg, length, 0) == -1) {
+		//sendto(fd, msg, length, 0, (struct sockaddr *)&peer_addr, sizeof(struct sockaddr_in));
         return -1;
     }
 
