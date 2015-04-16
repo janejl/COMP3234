@@ -108,6 +108,7 @@ typedef struct PACKET{
 	u32b_t type; // 2:ACK, 1:Data
 	u32b_t sequence;
 	u16b_t checksum;
+	int length; // length of data loaded
 	char payload[PAYLOAD]; // ACK packet has 0 payload
 }Packet;
 int currentSequence = 0; // 0 or 1
@@ -115,8 +116,8 @@ int recvSequence = 0; // 0 or 1, expected receiving sequence
 int lastSequence = 1;
 int lastACKnum = 1;
 
-//Packet makeDataPacket(u32b_t seq, char *payload, int length);
-//Packet makeACKPacket(u32b_t seq);
+void makeDataPacket(Packet * pkt, u32b_t seq, char *payload, int length);
+void makeACKPacket(Packet *pkt, u32b_t seq);
 
 int rdt_socket();
 int rdt_bind(int fd, u16b_t port);
@@ -179,28 +180,11 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
     return 0;
 }
 
-/*Packet *makeDataPacket(Packet * p, u32b_t seq, char *payload, int length){
-	Packet *pkt = p;
-	pkt->type = 1;
-	pkt->sequence = seq;
-	pkt->checksum = 0; // checksum should be assigned later on.
-	memcpy(pkt->payload, payload, length);
-	return pkt;
-
-}
-
-Packet makeACKPacket(u32b_t seq){
-	Packet pkt;
-	pkt.type = 2;
-	pkt.sequence = seq;
-	pkt.checksum = 0;
-	return pkt;
-}*/
-
 void makeDataPacket(Packet * pkt, u32b_t seq, char *payload, int length){
 	pkt->type = 1;
 	pkt->sequence = seq;
 	pkt->checksum = 0; // checksum should be assigned later on.
+	pkt->length = length;
 	memcpy(pkt->payload, payload, length);
 }
 
@@ -208,6 +192,7 @@ void makeACKPacket(Packet *pkt, u32b_t seq){
 	pkt->type = 2;
 	pkt->sequence = seq;
 	pkt->checksum = 0;
+	pkt->length = 0;
 }
 
 /* Application process calls this function to transmit a message to
@@ -300,7 +285,6 @@ int rdt_send(int fd, char * msg, int length){
    the arrival of the message.
    msg		-> pointer to the receiving buffer
    length	-> length of receiving buffer
-
    return	-> size of data received on success, -1 on error
 */
 int rdt_recv(int fd, char * msg, int length){
@@ -347,7 +331,7 @@ int rdt_recv(int fd, char * msg, int length){
 					lastACKnum = recvSequence;
 					recvSequence = abs(recvSequence - 1);// 0 or 1
 
-					return sizeof(recvpkt.payload); // be careful here!!!
+					return recvpkt.length; // be careful here!!!
 				}else{
 					Packet ackpkt;
 					bzero(&ackpkt, sizeof ackpkt);
@@ -363,7 +347,6 @@ int rdt_recv(int fd, char * msg, int length){
 			}
 		}
 	}
-
 }
 
 /* Application process calls this function to close the RDT socket.
