@@ -264,23 +264,6 @@ int rdt_send(int fd, char * msg, int length){
 				// got packet from peer
 				u16b_t checkvalue = checksum((u8b_t *)&recvpkt, sizeof recvpkt);
 
-				/*
-				if((checkvalue==0)&&(recvpkt.type==2)&&(recvpkt.sequence == currentSequence)){
-					// got expected ackpkt from peer
-					printf("[rdt_send]expected ACK!!!\n");///
-
-					lastACKnum = currentSequence;
-					currentSequence = abs(currentSequence - 1); // 0 or 1
-					return length;
-				}else if((checkvalue==0)&&(recvpkt.type==1)){
-					// got datapkt from peer: ack it (especially in handshaking)
-					Packet ackpkt = makeACKPacket(recvpkt.sequence);
-					ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
-
-					udt_send(fd, &ackpkt, sizeof ackpkt, 0);
-					printf("[rdt_send] get datapkt:ack...seq=%u\n", ackpkt.sequence);///
-				}*/
-
 				if(checkvalue==0){
 					//packet not corrupt: check type
 					if((recvpkt.type == 2)&&(recvpkt.sequence == currentSequence)){
@@ -288,10 +271,10 @@ int rdt_send(int fd, char * msg, int length){
 						// got expected ackpkt from peer
 						printf("[rdt_send]expected ACK!!!\n");///
 
-						lastACKnum = currentSequence;
+						//lastACKnum = currentSequence;
 						currentSequence = abs(currentSequence - 1); // 0 or 1
 						return length;
-					}else if(recvpkt.type == 1){
+					}else if((recvpkt.type == 1)&&(recvpkt.sequence == lastACKnum)){
 						// got datapkt from peer: ack it (especially in handshaking)
 						Packet ackpkt;
 						bzero(&ackpkt, sizeof ackpkt);
