@@ -115,8 +115,8 @@ int recvSequence = 0; // 0 or 1, expected receiving sequence
 int lastSequence = 1;
 int lastACKnum = 1;
 
-Packet makeDataPacket(u32b_t seq, char *payload, int length);
-Packet makeACKPacket(u32b_t seq);
+//Packet makeDataPacket(u32b_t seq, char *payload, int length);
+//Packet makeACKPacket(u32b_t seq);
 
 int rdt_socket();
 int rdt_bind(int fd, u16b_t port);
@@ -179,13 +179,14 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
     return 0;
 }
 
-Packet makeDataPacket(u32b_t seq, char *payload, int length){
-	Packet pkt;
-	pkt.type = 1;
-	pkt.sequence = seq;
-	pkt.checksum = 0; // checksum should be assigned later on.
-	memcpy(&pkt.payload, payload, length);
+/*Packet *makeDataPacket(Packet * p, u32b_t seq, char *payload, int length){
+	Packet *pkt = p;
+	pkt->type = 1;
+	pkt->sequence = seq;
+	pkt->checksum = 0; // checksum should be assigned later on.
+	memcpy(pkt->payload, payload, length);
 	return pkt;
+
 }
 
 Packet makeACKPacket(u32b_t seq){
@@ -194,6 +195,19 @@ Packet makeACKPacket(u32b_t seq){
 	pkt.sequence = seq;
 	pkt.checksum = 0;
 	return pkt;
+}*/
+
+void makeDataPacket(Packet * pkt, u32b_t seq, char *payload, int length){
+	pkt->type = 1;
+	pkt->sequence = seq;
+	pkt->checksum = 0; // checksum should be assigned later on.
+	memcpy(pkt->payload, payload, length);
+}
+
+void makeACKPacket(Packet *pkt, u32b_t seq){
+	pkt->type = 2;
+	pkt->sequence = seq;
+	pkt->checksum = 0;
 }
 
 /* Application process calls this function to transmit a message to
@@ -205,11 +219,14 @@ Packet makeACKPacket(u32b_t seq){
 int rdt_send(int fd, char * msg, int length){
 //implement the Stop-and-Wait ARQ (rdt3.0) logic
 
-	Packet sendpkt = makeDataPacket(currentSequence, msg, length);
+	Packet sendpkt;
+	bzero(&sendpkt, sizeof sendpkt);
+	//printf("app msg %d %s\n", length, msg);
+	makeDataPacket(&sendpkt, currentSequence, msg, length);
 	sendpkt.checksum = checksum((u8b_t *)&sendpkt, sizeof sendpkt);
 
 	udt_send(fd, &sendpkt, sizeof sendpkt, 0);
-	printf("[rdt_send] send datapkt..... seq=%d, size=%ld\n", sendpkt.sequence, strlen(sendpkt.payload));///
+	printf("[rdt_send] send datapkt..... seq=%d\n", sendpkt.sequence);///
 
 	fd_set master, read_fds;
 	struct timeval timer; // for timeout
@@ -236,6 +253,7 @@ int rdt_send(int fd, char * msg, int length){
 		}else if(status > 0){
 			// packet arrive
 			Packet recvpkt;
+			bzero(&recvpkt, sizeof recvpkt);
 			int nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
 			printf("[rdt_send] receive pkt...... seq=%u, type=%u, size=%lu\n", recvpkt.sequence, recvpkt.type, strlen(recvpkt.payload));///
 
@@ -244,7 +262,7 @@ int rdt_send(int fd, char * msg, int length){
 				return -1;
 			}else{
 				// got packet from peer
-				u16b_t checkvalue = checksum((u8b_t *)&recvpkt, nbytes);
+				u16b_t checkvalue = checksum((u8b_t *)&recvpkt, sizeof recvpkt);
 
 				/*
 				if((checkvalue==0)&&(recvpkt.type==2)&&(recvpkt.sequence == currentSequence)){
@@ -275,7 +293,9 @@ int rdt_send(int fd, char * msg, int length){
 						return length;
 					}else if(recvpkt.type == 1){
 						// got datapkt from peer: ack it (especially in handshaking)
-						Packet ackpkt = makeACKPacket(recvpkt.sequence);
+						Packet ackpkt;
+						bzero(&ackpkt, sizeof ackpkt);
+						makeACKPacket(&ackpkt, recvpkt.sequence);
 						ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 						udt_send(fd, &ackpkt, sizeof ackpkt, 0);
@@ -305,6 +325,7 @@ int rdt_recv(int fd, char * msg, int length){
 
 	while(1){
 		Packet recvpkt;
+		bzero(&recvpkt, sizeof recvpkt);
 		int nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
 
 		if(nbytes <= 0){
@@ -316,7 +337,9 @@ int rdt_recv(int fd, char * msg, int length){
 
 			if(checkvalue != 0){
 				// corrupted, send duplicate ACK
-				Packet ackpkt = makeACKPacket(lastSequence);
+				Packet ackpkt;
+				bzero(&ackpkt, sizeof ackpkt);
+				makeACKPacket(&ackpkt, lastSequence);
 				ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 				udt_send(fd, &ackpkt, sizeof ackpkt, 0);
@@ -327,21 +350,25 @@ int rdt_recv(int fd, char * msg, int length){
 
 				// check whether the DATA packet is expected
 				if(recvpkt.sequence == recvSequence){
-					Packet ackpkt = makeACKPacket(recvSequence);
+					Packet ackpkt;
+					bzero(&ackpkt, sizeof ackpkt);
+					makeACKPacket(&ackpkt, recvSequence);
 					ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 					udt_send(fd, &ackpkt, sizeof ackpkt, 0);
 					printf("[rdt_recv] correct datapkt: send ack......seq=%u\n", ackpkt.sequence);////
 
-					memcpy(msg, &(recvpkt.payload), nbytes); // get massage
-					printf("[rdt_recv] size of received...............siz=%ld\n", strlen(recvpkt.payload));///
+					memcpy(msg, recvpkt.payload, sizeof recvpkt.payload); // get massage
+					printf("[rdt_recv] size of received...............siz=%d\n", nbytes);///
 					lastSequence = recvSequence;
 					lastACKnum = recvSequence;
 					recvSequence = abs(recvSequence - 1);// 0 or 1
 
-					return strlen(recvpkt.payload);
+					return sizeof(recvpkt.payload); // be careful here!!!
 				}else{
-					Packet ackpkt = makeACKPacket(lastSequence);
+					Packet ackpkt;
+					bzero(&ackpkt, sizeof ackpkt);
+					makeACKPacket(&ackpkt, lastSequence);
 					ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 					udt_send(fd, &ackpkt, sizeof ackpkt, 0);
@@ -372,7 +399,7 @@ int rdt_close(int fd){
 	FD_SET(fd, &master);
 
 	while(1){
-		timer.tv_sec = 10;
+		timer.tv_sec = 0;
 		timer.tv_usec = TWAIT;
 		read_fds = master;
 		status = select(fd+1, &read_fds, NULL, NULL, &timer);
@@ -387,12 +414,15 @@ int rdt_close(int fd){
 		}else if(status > 0){
 			// packet arrival
 			Packet recvpkt;
+			bzero(&recvpkt, sizeof recvpkt);
 			nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
 			checkvalue = checksum((u8b_t *)&recvpkt, nbytes);
 
 			if((nbytes > 0)&&(checkvalue == 0)&&(recvpkt.type == 1)&&(recvpkt.sequence == lastACKnum)){
 				// resend ACK
-				Packet ackpkt = makeACKPacket(lastACKnum);
+				Packet ackpkt;
+				bzero(&ackpkt, sizeof ackpkt);
+				makeACKPacket(&ackpkt, lastACKnum);
 				ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 				printf("[rdt_close]resend ACK: type=%u, seq=%u\n", ackpkt.type, ackpkt.sequence);////
