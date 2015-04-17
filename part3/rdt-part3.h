@@ -1,10 +1,10 @@
 /**************************************************************
 rdt-part3.h
-Student name:
-Student No. :
-Date and version:
-Development platform:
-Development language:
+Student name: JIANG Ling
+Student No. : 3035030066
+Date and version: 17/04/2015
+Development platform: Mac OS
+Development language: C
 Compilation:
 	Can be compiled with
 *****************************************************************/
@@ -110,14 +110,18 @@ typedef struct PACKET{
 	u32b_t type; // 2:ACK, 1:Data
 	u32b_t sequence; // should be larger than window size W
 	u16b_t checksum;
+	int length;
 	char payload[PAYLOAD]; // ackpkt has 0 payload
 }Packet;
 u32b_t nextseqnum = 1; // 0 is kept for empty cell in seqlist
+u32b_t lastwindowbase = 1;
 u32b_t currentwindowbase = 1;
+
 u32b_t expectedseqnum = 1;
 
-Packet makeDataPacket(u32b_t seq, char *payload, int length);
-Packet makeACKPacket(u32b_t seq);
+
+void makeDataPacket(Packet *pkt, u32b_t seq, char *payload, int length);
+void makeACKPacket(Packet *pkt, u32b_t seq);
 int isNotCorrupt(Packet *pkt, int length);
 int isACK(Packet *pkt);
 int isACKbetween(Packet *pkt, u32b_t left, u32b_t right);
@@ -194,120 +198,136 @@ int rdt_target(int fd, char * peer_name, u16b_t peer_port){
 int rdt_send(int fd, char * msg, int length){
 //implement the Extended Stop-and-Wait ARQ logic
 
-	// set number of packets every round
-	int numpkt = length/PAYLOAD;
-	int rounds = (numpkt + W - 1)/W;
-	int *N = (int *)malloc(rounds*sizeof(int));
-	if(rounds > 1){
-		memset(N, W, rounds*sizeof(int)); // set all entries except last one of N into W
-		N[rounds-1] = N - rounds*W;
-	}else N[0] = numpkt;
+	// set number of packets
+	int numpkt = (length+PAYLOAD-1)/PAYLOAD;
+	if(numpkt > W) {
+		printf("~~~~~~~msg overflow the window!!!\n");
+		return -1;
+	}// msg length is supposed to be <= PAYLOAD*W
 
-	int remain = length;
+	printf("****************   Curent Window: [%u, %u]   ****************\n", currentwindowbase, currentwindowbase+numpkt-1);
+	printf("[rdt_send] length=%d, Number of packets=%d\n", length, numpkt);/////
+
+	int remainlength = length;
 	int copylength = 0;
-	u32b_t *seqList = (u32b_t *)malloc(W*sizeof(u32b_t)); // keep track of seqs of current window
-	int *ackList = (int *)malloc(W*sizeof(int)); // ACK situation of seqList's corresponding entry
 	char *smallmsg = (char *)malloc(PAYLOAD*sizeof(char));
+	int ackList[W] = {0}; // ACK situation of current window
+	Packet *pktList = (Packet *)malloc(numpkt*sizeof(Packet)); // store pkts this round for ACK checking
 
-	for(int r=0; r<rounds; ++r){
-		// Every rounds, at most W packets will be sent
-		bzero(seqList, W);
-		bzero(ackList, W);
-		Packet *pktList = (Packet *)malloc(N[r]*sizeof(Packet)); // store pkts this round for ACK checking
+	// Send all pkts within current window
+	for(int i=0; i<numpkt; ++i){
+		if(remainlength > PAYLOAD) copylength = PAYLOAD;
+		else copylength = remainlength;
 
-		// Send all pkt within current window
-		for(int i=0; i<N[r]; ++i){
-			copylength = remainlength>PAYLOAD? PAYLOAD:remainlength;
-			bzero(smallmsg, PAYLOAD);
-			memcpy(smallmsg, msg, copylength);
+		bzero(smallmsg, PAYLOAD);
+		memcpy(smallmsg, msg, copylength);
+		Packet sendpkt;
+		bzero(&sendpkt, sizeof sendpkt);
+		makeDataPacket(&sendpkt, nextseqnum, smallmsg, copylength);
+		sendpkt.checksum = checksum((u8b_t *)&sendpkt, sizeof sendpkt);
 
-			Packet sendpkt = makeDataPacket(nextseqnum, smallmsg, copylength);
-			sendpkt.checksum = checksum((u8b_t *)&sendpkt, sizeof sendpkt);
+		++nextseqnum;
+		remainlength -= copylength;
+		msg += copylength;
 
-			seqList[i] = nextseqnum;
-			nextseqnum++;
-			remainlength -= copylength;
+		pktList[i] = sendpkt;
+		udt_send(fd, &sendpkt, sizeof sendpkt, 0);
+		printf("[rdt_send] send datapkt... seq=%u, length=%d, nextseq=%u\n", sendpkt.sequence, sendpkt.length, nextseqnum);///
+	}
 
-			pktList[i] = sendpkt;
-			udt_send(fd, sendpkt, copylength, 0);
-			printf("[rdt_send] send datapkt... seq=%d\n", sendpkt.sequence);///
-		}
-		// All packet at this round have been sent, start timer
-		fd_set master, read_fds;
-		struct timeval timer; // for timeout
-		int status, nbytes;
-		u16b_t checkvalue;
+	// All packet at this round have been sent, start timer
+	fd_set master, read_fds;
+	struct timeval timer; // for timeout
+	int status;
 
-		FD_ZERO(&master);
-		FD_ZERO(&read_fds);
-	    FD_SET(fd, &master);
+	FD_ZERO(&master);
+	FD_ZERO(&read_fds);
+	FD_SET(fd, &master);
 
-	    // Wait for ACK for current window
-		while(1){
-			timer.tv_sec = 0;
-			timer.tv_usec = TIMEOUT;
-			read_fds = master;
-			status = select(fd+1, &read_fds, NULL, NULL, &timer);
+	bzero(&ackList, W);
+	// Wait for ACK of current window
+	while(1){
+		timer.tv_sec = 0;
+		timer.tv_usec = TIMEOUT;
+		read_fds = master;
+		status = select(fd+1, &read_fds, NULL, NULL, &timer);
 
-			if(status == -1){
-				perror("[rdt_send] error_select:");
-				return -1;
-			}else if(status == 0){
-				// Timeout: retransmit
-				//printf("[rdt_send]timeout, retransmit... seq=%d\n", sendpkt.sequence);
-				int t = 0;
-				while(seqList[t]){ //empty cell will be 0
-					if(!ackList[t]){
-						// retransmit this packet
-						printf("[rdt_send] retransmit pkt, seq=%d\n", pktList[t].sequence);
-						udt_send(fd, &(pktList[t]), sizeof (pktList[t]), 0);
-					}
-					++i;
+		if(status == -1){
+			perror("[rdt_send] error_select:");
+			return -1;
+		}else if(status == 0){
+			// Timeout: retransmit all unacked pkts within current window
+			for(int i=0; i<numpkt; ++i){
+				if(ackList[i]==0){ //unack = 0; acked = 1
+					// retransmit this packet
+					printf("[rdt_send] Tout resnd pkt, seq=%u, length=%d\n", pktList[i].sequence,  pktList[i].length);
+					udt_send(fd, &(pktList[i]), sizeof pktList[i], 0);
 				}
-			}else if(status > 0){
-				// packet arrive
-				Packet recvpkt;
-				nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
+			}
 
-				if(nbytes <= 0){
-					// got error or connection closed by client
-					if(nbytes == 0) printf("[rdt_send()]nbytes=0");
-					else perror("[rdt_send()]recv_error:");
-					return -1;
-				}else if(isNotCorrupt(&recvpkt, sizeof recvpkt)){
-					if(isACK(&recvpkt)){
-						if(isACKbetween(&recvpkt, seqList[0], seqList[N[r]-1])){
-							if(isACKbetween(&recvpkt, seqList[0], seqList[N[r]-2])){
-								// set all pkt inbetween be acked (accumulate ACK)
-								for(int j=0; j<(recvpkt.sequence-seqList[0]); ++j){
-									ackList[j] = 1;
-								}
-							}else{
-								// recvpkt.seq == seqList[N[r]-1]: stop timer
-								break;
+		}else if(status > 0){
+			// packet arrive
+			Packet recvpkt;
+			bzero(&recvpkt, sizeof recvpkt);
+			int nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
+
+			if(nbytes <= 0){
+				printf("[rdt_send] got error or connection closed by client\n");
+				return -1;
+			}else if(isNotCorrupt(&recvpkt, sizeof recvpkt)){
+				if(isACK(&recvpkt)){
+					printf("[rdt_send] got ackpkt......seq=%u\n", recvpkt.sequence);
+					if(isACKbetween(&recvpkt, currentwindowbase, currentwindowbase+numpkt-1)){
+						if(isACKbetween(&recvpkt, currentwindowbase,  currentwindowbase+numpkt-2)){
+							// set all pkt inbetween be acked (accumulate ACK)
+							for(int j=0; j<=(recvpkt.sequence-currentwindowbase); ++j){
+								ackList[j] = 1;
 							}
+						}else{
+							// recvpkt.seq == (currentwindowbase+numpkt-1)
+							// Stop timer; all pkt in window this round are acked, slide window
+							lastwindowbase = currentwindowbase;
+							currentwindowbase = nextseqnum;
+							printf("[rdt_send] all pkt in window this round are acked, slide window......\n");
+							printf("****************   Origin Window: [%u, %u]   ****************\n", lastwindowbase, currentwindowbase-1);
+							return length;
 						}
+					}else{
 						printf("[rdt_send] pkt received is not within range\n");
 						continue;
-					}else{
-						// receive a datapkt: ack it to avoid deadlock
-						Packet ackpkt = makeACKPacket(recvpkt.sequence);
+					}
+				}else{
+					// sender receive a datapkt
+					if(recvpkt.sequence < expectedseqnum){
+						// receive a datapkt: ack it if it is retransmitted to avoid deadlock
+						Packet ackpkt;
+						bzero(&ackpkt, sizeof ackpkt);
+						makeACKPacket(&ackpkt, recvpkt.sequence);
 						ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 						udt_send(fd, &ackpkt, sizeof ackpkt, 0);
-						printf("[rdt_send] sender receive a datapkt: ack it\n");
+						printf("[rdt_send] sender receive a resent datapkt: ack it\n");
+					}else if((recvpkt.sequence==1) && (strcmp(recvpkt.payload, "OKAY")==0)){
+						// this is server's response during the handshaking
+						// regard this as a ackpkt for previous sendpkt (current window).
+						// Don't send back any ackpkt to make the peer hold on rdt_send() and wait for my side's rdt_recv()
+						printf("OKAY................\n");
+
+						// Stop timer; all pkt in window this round are acked, slide window
+						lastwindowbase = currentwindowbase;
+						currentwindowbase = nextseqnum;
+						printf("[rdt_send] all pkt in window this round are acked, slide window......\n");
+						printf("****************   Origin: [%u, %u]   ****************\n", lastwindowbase, currentwindowbase-1);
+						return length;
+					}else{
+						printf("[rdt_send] sender receive a unexpc datapkt: drop it\n");
 					}
 				}
+			}else{
 				printf("[rdt_send] pkt received is corrupt\n");
 			}
 		}
-
-		// timer is stopped; all pkt in window this round are acked, slide window
-		currentwindowbase = nextseqnum;
-		printf("[rdt_send] all pkt in window this round are acked, slide window......\n");
 	}
-
-	return length;
 }
 
 /* Application process calls this function to wait for a message of any
@@ -319,56 +339,56 @@ int rdt_send(int fd, char * msg, int length){
 */
 int rdt_recv(int fd, char * msg, int length){
 //implement the Extended Stop-and-Wait ARQ logic
-	int nbytes;
-
 	while(1){
 		Packet recvpkt;
-		nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
+		bzero(&recvpkt, sizeof recvpkt);
+		int nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
 
 		if(nbytes <= 0){
-			// got error or connection closed by client
-			if(nbytes == 0) printf("[rdt_recv()] nbytes=0");
-			else perror("[rdt_recv()] error_recv:");
-
+			printf("[rdt_recv] got error or connection closed by client\n");
 			return -1;
-		}else if(isNotCorrupt(&recvpkt, sizeof recvpkt)){
+		}
+
+		if(isNotCorrupt(&recvpkt, sizeof recvpkt)){
+			printf("[rdt_recv] ....receive a pkt...... type=%u, seq=%u, exp=%u, length=%d\n", recvpkt.type, recvpkt.sequence, expectedseqnum, recvpkt.length);
+
 			if(!isACK(&recvpkt)){
 				// receive a datapkt: check whether the DATA packet is expected
-				printf("[rdt_recv] receive a datapkt...... expect seq: %d\n", expectedseqnum);///
-
 				if(recvpkt.sequence == expectedseqnum){
-					Packet ackpkt = makeACKPacket(expectedseqnum);
+					Packet ackpkt;
+					bzero(&ackpkt, sizeof ackpkt);
+					makeACKPacket(&ackpkt, expectedseqnum);
 					ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 					udt_send(fd, &ackpkt, sizeof ackpkt, 0);
-					printf("[rdt_recv] expected datapkt!!! send ack...... type=%u, seq=%u\n", ackpkt.type, ackpkt.sequence);////
+					printf("[rdt_recv] expected datapkt! send ack......seq=%u\n", ackpkt.sequence);////
 
-					break;
+					memcpy(msg, recvpkt.payload, sizeof recvpkt.payload); // get massage
+					expectedseqnum++;
+					return recvpkt.length;
 				}else{
-					Packet ackpkt = makeACKPacket(expectedseqnum-1);
+					Packet ackpkt;
+					bzero(&ackpkt, sizeof ackpkt);
+					makeACKPacket(&ackpkt, expectedseqnum-1);
 					ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 					udt_send(fd, &ackpkt, sizeof ackpkt, 0);
-					printf("[rdt_recv] wrong datapkt!!! resend ack...... type=%u, seq=%u\n", ackpkt.type, ackpkt.sequence);////
+					printf("[rdt_recv] retraned datapkt! resend ack....seq=%u\n", ackpkt.sequence);////
 				}
+			}else{
+				printf("[rdt_recv] receiver get ackpkt: ignore it.\n");
 			}
-			printf("[rdt_recv] get ackpkt: ignore it.\n");
 		}else{
 			// corrupted, send duplicate ACK
-			ackpkt = makeACKPacket(expectedseqnum-1);
+			Packet ackpkt;
+			bzero(&ackpkt, sizeof ackpkt);
+			makeACKPacket(&ackpkt, expectedseqnum-1);
 			ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
-			printf("[rdt_recv] pkt is corrupted: resend ACK type=%u, seq=%u\n", ackpkt.type, ackpkt.sequence);////
 			udt_send(fd, &ackpkt, sizeof ackpkt, 0);
+			printf("[rdt_recv] pkt is corrupted: resend ack....seq=%u\n", ackpkt.sequence);////
 		}
 	}
-
-	memcpy(msg, &(recvpkt.payload), sizeof recvpkt.payload); // retrieve massage
-	expectedseqnum++;
-	// record peer's currentwindowbase
-	if(expectedseqnum == (currentwindowbase+W)) currentwindowbase = expectedseqnum;
-
-	return strlen(recvpkt.payload);
 }
 
 /* Application process calls this function to close the RDT socket.
@@ -393,54 +413,53 @@ int rdt_close(int fd){
 
 		if(status == 0){
 			// Timeout: close
-			break;
+			printf("CLOSE!\n");
+		    if(close(fd) < 0){
+		    	perror("[rdt_close]close:");
+		    }
+		    return 0;
 		}else if(status > 0){
 			// packet arrive
 			Packet recvpkt;
+			bzero(&recvpkt, sizeof recvpkt);
 			nbytes = recv(fd, &recvpkt, sizeof recvpkt, 0);
 			checkvalue = checksum((u8b_t *)&recvpkt, nbytes);
 
 			if((nbytes > 0)&&(checkvalue == 0)&&(recvpkt.type == 1)){
-				if((recvpkt.sequence >= (currentwindowbase-W)) && (recvpkt.sequence < currentwindowbase)){
+				if((recvpkt.sequence >= expectedseqnum-W) && (recvpkt.sequence < expectedseqnum)){
 					// receieve datapkt within previous window: resend ACK
-					Packet ackpkt = makeACKPacket(currentwindowbase - 1);
+					Packet ackpkt;
+					bzero(&ackpkt, sizeof ackpkt);
+					makeACKPacket(&ackpkt, expectedseqnum - 1);
 					ackpkt.checksum = checksum((u8b_t *)&ackpkt, sizeof ackpkt);
 
 					udt_send(fd, &ackpkt, sizeof ackpkt, 0);
-					printf("[rdt_close] resend ACK: currentbase=%u, type=%u, seq=%u\n", currentwindowbase, ackpkt.type, ackpkt.sequence);////
+					printf("[rdt_close] resend ACK: seq=%u\n", ackpkt.sequence);////
 				}
 			}
 		}
 	}
-
-	// Only when TWAIT is done will this be executed.
-	printf("CLOSE!\n");
-    if(close(fd) < 0){
-    	perror("[rdt_close]close:");
-    }
-    return 0;
 }
 
-Packet makeDataPacket(u32b_t seq, char *payload, int length){
-	Packet pkt;
-	pkt.type = 1;
-	pkt.sequence = seq;
-	pkt.checksum = 0; // checksum should be assigned later on.
-	memcpy(&pkt.payload, payload, length);
-	return pkt;
+
+void makeDataPacket(Packet *pkt, u32b_t seq, char *payload, int length){
+	pkt->type = 1;
+	pkt->sequence = seq;
+	pkt->checksum = 0; // checksum should be assigned later on.
+	pkt->length = length;
+	memcpy(pkt->payload, payload, length);
 }
 
-Packet makeACKPacket(u32b_t seq){
-	Packet pkt;
-	pkt.type = 2;
-	pkt.sequence = seq;
-	pkt.checksum = 0;
-	return pkt;
+void makeACKPacket(Packet *pkt, u32b_t seq){
+	pkt->type = 2;
+	pkt->sequence = seq;
+	pkt->checksum = 0;
+	pkt->length = 0;
 }
 
 int isNotCorrupt(Packet *pkt, int length){
-	if(checksum((u8b_t *)&pkt, length)) return 1;
-	return 0; //false: pkt is corrupt
+	if(checksum((u8b_t *)pkt, length)) return 0; //false: pkt is corrupt
+	return 1;
 }
 
 int isACK(Packet *pkt){

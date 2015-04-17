@@ -1,10 +1,10 @@
 /**************************************************************
 rdt-part2.h
-Student name:
-Student No. :
-Date and version:
-Development platform:
-Development language:
+Student name: JIANG Ling
+Student No. : 3035030066
+Date and version: 17/04/2015
+Development platform: Mac OS
+Development language: C
 Compilation:
 	Can be compiled with
 *****************************************************************/
